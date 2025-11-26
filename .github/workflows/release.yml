@@ -1,0 +1,106 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [linux, freebsd, windows]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-mingw-w64
+
+          if [ "${{ matrix.platform }}" = "freebsd" ]; then
+            # Install FreeBSD cross-compilation toolchain
+            sudo apt-get install -y qemu-user-static
+            sudo apt-get install -y clang llvm lld
+          fi
+
+      # Linux
+      - name: Build Linux
+        if: matrix.platform == 'linux'
+        run: |
+          make linux
+          make linux-static
+          mkdir -p out/linux
+          cp build/client build/server out/linux/
+
+      # FreeBSD (simulated cross build)
+      - name: Build FreeBSD
+        if: matrix.platform == 'freebsd'
+        run: |
+          make freebsd
+          make freebsd-static
+          mkdir -p out/freebsd
+          cp build/client build/server out/freebsd/
+
+      # Windows (MinGW)
+      - name: Build Windows
+        if: matrix.platform == 'windows'
+        run: |
+          make cygwin
+          mkdir -p out/windows
+          cp build/client.exe build/server.exe out/windows/
+
+      - name: Package artifacts
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PKG="ksh-${VERSION}-${{ matrix.platform }}"
+          mkdir -p release/$PKG
+
+          cp -r out/${{ matrix.platform }}/* release/$PKG/
+
+          # copy metadata
+          cp README.md LICENSE release/$PKG/
+
+          # plugins
+          if [ -d "plugins/lib" ] && [ -n "$(ls -A plugins/lib)" ]; then
+            cp -r plugins/lib release/$PKG/plugins
+          fi
+
+          cd release && tar -czvf "$PKG.tar.gz" "$PKG"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ksh-${{ matrix.platform }}
+          path: release/*.tar.gz
+
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          files: artifacts/**/*.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
